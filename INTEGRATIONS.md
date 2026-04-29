@@ -70,3 +70,62 @@ This is a one-time setup per toolkit (not per user) — all users of your Boop i
 - **External actions still use the draft flow.** Execution agents are prompted to call `save_draft` first for anything that writes to the outside world. The dispatcher's `send_draft` is the only path that actually commits.
 - **No tokens live in Boop.** Composio stores OAuth credentials on their side. Boop never sees them.
 - **Tool names are Composio's canonical slugs** (e.g., `GMAIL_LIST_MESSAGES`). The debug dashboard humanizes them for display.
+
+---
+
+## Local Apple integrations (macOS only)
+
+Boop ships with two integrations that run against the Mac it's hosted on, alongside the Composio cloud catalog:
+
+- `apple-reminders` — Reminders R/W (8 tools: list_lists, list_reminders, search_reminders, get_reminder, create_reminder, update_reminder, complete_reminder, delete_reminder).
+- `apple-notes` — Notes R/W (8 tools: list_folders, list_notes, search_notes, read_note, create_note, append_to_note, update_note, delete_note).
+
+These use AppleScript / JXA via `osascript`. They auto-register at server boot when `process.platform === "darwin"`. No env var, no Connections-tab card.
+
+### One-time permission grant
+
+The first AppleScript call to each app triggers a macOS Automation prompt against the parent Node process. Run the warmup once before texting Boop:
+
+```bash
+npm run apple:permissions
+```
+
+You'll see two macOS dialogs. Click **OK** on each. Output:
+
+```
+✓ apple-reminders: granted (123ms)
+✓ apple-notes: granted (98ms)
+```
+
+If a prompt was missed (or denied by mistake), fix it in **System Settings → Privacy & Security → Automation → Node** — toggle Reminders and Notes on.
+
+### Local tab in the dashboard
+
+The debug dashboard's **Local** tab shows whether each module is loaded, current permission status, and live counts (lists / reminders / folders / notes). The **Permission warmup** button is the same as `npm run apple:permissions` — handy if you switched Macs or revoked the permission.
+
+### Drafts flow
+
+Apple writes (`create_reminder`, `delete_note`, etc.) go through the existing `save_draft` flow exactly like Gmail / Slack writes. The execution agent stages the action; the dispatcher confirms with the user; only `send_draft` commits. New `kind` tags:
+
+- `apple-reminders.create / .update / .complete / .delete`
+- `apple-notes.create / .append / .update / .delete`
+
+These render in the Drafts tab with the kind + summary + raw JSON, same as cloud-toolkit drafts.
+
+### Spawning
+
+```ts
+spawn_agent({
+  task: "what's on my list today?",
+  integrations: ["apple-reminders"],
+});
+```
+
+Multi-toolkit spawns are supported (e.g. "save my reminders for today as a note" → `["apple-reminders", "apple-notes"]`).
+
+### What's intentionally not included (v1)
+
+- Apple Messages (iMessage / SMS history). Sendblue handles Boop's own iMessage in/out; reading the user's personal `chat.db` is deferred.
+- Mail / Calendar / Contacts / Maps. Composio + Google Calendar already covers most use cases.
+- Vector indexing of Notes content into Convex `memoryRecords` for cross-source semantic recall.
+- Cloud-deployed Boop. The modules require osascript on the same machine.
