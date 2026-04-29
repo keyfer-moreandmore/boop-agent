@@ -181,6 +181,121 @@ export function buildReadNoteScript(args: ReadNoteArgs): string {
   `;
 }
 
+// ─────────────────────────────── Write builders ─────────────────────────────
+
+export interface CreateNoteArgs {
+  title: string;
+  body: string;
+  folder?: string;
+}
+
+export function buildCreateNoteScript(args: CreateNoteArgs): string {
+  const html = plainTextToHtml(args.body);
+  // The body is built inline from `args.title` (HTML-escaped) + `args.html`.
+  // No top-level `return` — the script ends with a bare `JSON.stringify(...)`.
+  return `
+    const Notes = Application('Notes');
+    const args = ${jsonLiteral({ title: args.title, html, folder: args.folder })};
+    const folder = args.folder
+      ? Notes.folders.whose({ name: args.folder })()[0]
+      : Notes.defaultFolder();
+    if (!folder) throw new Error("Folder not found: " + args.folder);
+    const fullBody = "<h1>" + args.title.replace(/[<>&]/g, c => ({ "<":"&lt;", ">":"&gt;", "&":"&amp;" }[c])) + "</h1>" + args.html;
+    const n = Notes.Note({ name: args.title, body: fullBody });
+    folder.notes.push(n);
+    JSON.stringify({ id: n.id(), name: n.name(), folderName: folder.name() });
+  `;
+}
+
+export interface AppendToNoteArgs {
+  id: string;
+  content: string;
+}
+
+export function buildAppendToNoteScript(args: AppendToNoteArgs): string {
+  const html = plainTextToHtml(args.content);
+  // NOTE: top-level `return` is invalid in JXA scripts. Use an accumulator
+  // pattern: assign to `result`, `break` out of the loop, then end with a bare
+  // `JSON.stringify(result)` expression.
+  return `
+    const Notes = Application('Notes');
+    const id = ${jsonLiteral(args.id)};
+    const html = ${jsonLiteral(html)};
+    let result = null;
+    for (const f of Notes.folders()) {
+      const m = f.notes.whose({ id })();
+      if (m.length) {
+        const n = m[0];
+        n.body = String(n.body() || "") + "<br>" + html;
+        result = { id: n.id(), name: n.name() };
+        break;
+      }
+    }
+    if (!result) throw new Error("Note not found: " + id);
+    JSON.stringify(result);
+  `;
+}
+
+export interface UpdateNoteArgs {
+  id: string;
+  title?: string;
+  body?: string;
+}
+
+export function buildUpdateNoteScript(args: UpdateNoteArgs): string {
+  const html = args.body !== undefined ? plainTextToHtml(args.body) : null;
+  // NOTE: top-level `return` is invalid in JXA scripts. Use an accumulator
+  // pattern: assign to `result`, `break` out of the loop, then end with a bare
+  // `JSON.stringify(result)` expression.
+  return `
+    const Notes = Application('Notes');
+    const id = ${jsonLiteral(args.id)};
+    const newTitle = ${jsonLiteral(args.title ?? null)};
+    const newHtml = ${jsonLiteral(html)};
+    let result = null;
+    for (const f of Notes.folders()) {
+      const m = f.notes.whose({ id })();
+      if (m.length) {
+        const n = m[0];
+        if (newTitle !== null) n.name = newTitle;
+        if (newHtml !== null) {
+          const titleH1 = "<h1>" + (newTitle || n.name()).replace(/[<>&]/g, c => ({ "<":"&lt;", ">":"&gt;", "&":"&amp;" }[c])) + "</h1>";
+          n.body = titleH1 + newHtml;
+        }
+        result = { id: n.id(), name: n.name() };
+        break;
+      }
+    }
+    if (!result) throw new Error("Note not found: " + id);
+    JSON.stringify(result);
+  `;
+}
+
+export interface DeleteNoteArgs {
+  id: string;
+}
+
+export function buildDeleteNoteScript(args: DeleteNoteArgs): string {
+  // NOTE: top-level `return` is invalid in JXA scripts. Use an accumulator
+  // pattern: assign to `result`, `break` out of the loop, then end with a bare
+  // `JSON.stringify(result)` expression.
+  return `
+    const Notes = Application('Notes');
+    const id = ${jsonLiteral(args.id)};
+    let result = null;
+    for (const f of Notes.folders()) {
+      const m = f.notes.whose({ id })();
+      if (m.length) {
+        m[0].delete();
+        result = { id, deleted: true };
+        break;
+      }
+    }
+    if (!result) throw new Error("Note not found: " + id);
+    JSON.stringify(result);
+  `;
+}
+
 // ─────────────────────────────── Formatting ─────────────────────────────────
 
 interface NoteRow {
@@ -318,7 +433,106 @@ export function buildAppleNotesIntegrationModule(): IntegrationModule {
             },
           ),
 
-          // Write tools added in Task 6.
+          // ─── Write tools ───
+
+          tool(
+            "create_note",
+            "Create a note. Body accepts plain text with '- ' bullets and newlines; converted to minimal HTML internally. ALWAYS go through save_draft first.",
+            {
+              title: z.string(),
+              body: z.string(),
+              folder: z.string().optional(),
+            },
+            async (args) => {
+              try {
+                const n = await runOsa<{ id: string; name: string; folderName: string }>(
+                  buildCreateNoteScript(args),
+                );
+                return {
+                  content: [
+                    {
+                      type: "text" as const,
+                      text: `Created [${n.id}] ${n.name} in ${n.folderName}`,
+                    },
+                  ],
+                };
+              } catch (err) {
+                return {
+                  content: [{ type: "text" as const, text: osaErrorToText(err) }],
+                  isError: true,
+                };
+              }
+            },
+          ),
+
+          tool(
+            "append_to_note",
+            "Append plain-text content to the end of an existing note. ALWAYS go through save_draft first.",
+            { id: z.string(), content: z.string() },
+            async (args) => {
+              try {
+                const n = await runOsa<{ id: string; name: string }>(
+                  buildAppendToNoteScript(args),
+                );
+                return {
+                  content: [
+                    { type: "text" as const, text: `Appended to [${n.id}] ${n.name}` },
+                  ],
+                };
+              } catch (err) {
+                return {
+                  content: [{ type: "text" as const, text: osaErrorToText(err) }],
+                  isError: true,
+                };
+              }
+            },
+          ),
+
+          tool(
+            "update_note",
+            "Replace a note's title and/or body. Body is plain text, converted to minimal HTML. ALWAYS go through save_draft first.",
+            {
+              id: z.string(),
+              title: z.string().optional(),
+              body: z.string().optional(),
+            },
+            async (args) => {
+              try {
+                const n = await runOsa<{ id: string; name: string }>(
+                  buildUpdateNoteScript(args),
+                );
+                return {
+                  content: [
+                    { type: "text" as const, text: `Updated [${n.id}] ${n.name}` },
+                  ],
+                };
+              } catch (err) {
+                return {
+                  content: [{ type: "text" as const, text: osaErrorToText(err) }],
+                  isError: true,
+                };
+              }
+            },
+          ),
+
+          tool(
+            "delete_note",
+            "Delete a note permanently. Cannot be undone. ALWAYS go through save_draft first.",
+            { id: z.string() },
+            async (args) => {
+              try {
+                await runOsa(buildDeleteNoteScript(args));
+                return {
+                  content: [{ type: "text" as const, text: `Deleted ${args.id}` }],
+                };
+              } catch (err) {
+                return {
+                  content: [{ type: "text" as const, text: osaErrorToText(err) }],
+                  isError: true,
+                };
+              }
+            },
+          ),
         ],
       }),
   };

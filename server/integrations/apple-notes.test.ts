@@ -6,6 +6,10 @@ import {
   buildListNotesScript,
   buildSearchNotesScript,
   buildReadNoteScript,
+  buildCreateNoteScript,
+  buildAppendToNoteScript,
+  buildUpdateNoteScript,
+  buildDeleteNoteScript,
 } from "./apple-notes.js";
 
 describe("html helpers", () => {
@@ -67,5 +71,34 @@ describe("apple-notes script builders", () => {
   it("read_note: includes id literal", () => {
     const s = buildReadNoteScript({ id: "x-coredata://abc" });
     expect(s).toContain(`"x-coredata://abc"`);
+  });
+});
+
+describe("apple-notes write builders", () => {
+  it("create_note: makes a Note in the named folder", () => {
+    const s = buildCreateNoteScript({
+      title: "Trip plans",
+      body: "- Flight\n- Hotel",
+      folder: "Travel",
+    });
+    expect(s).toContain(`"Travel"`);
+    expect(s).toContain("Notes.Note");
+    expect(s).toContain(`"Trip plans"`);
+  });
+
+  it("append_to_note: appends body content", () => {
+    const s = buildAppendToNoteScript({ id: "x-coredata://abc", content: "extra" });
+    expect(s).toContain(`"x-coredata://abc"`);
+    expect(s).toContain("extra");
+  });
+
+  it("update_note: replaces title or body", () => {
+    const s = buildUpdateNoteScript({ id: "x-coredata://abc", title: "new" });
+    expect(s).toContain(`"new"`);
+  });
+
+  it("delete_note: deletes by id", () => {
+    const s = buildDeleteNoteScript({ id: "x-coredata://abc" });
+    expect(s).toContain(".delete()");
   });
 });
