@@ -50,6 +50,10 @@ async function runAutomation(a: {
       integrations: a.integrations,
       conversationId: a.conversationId,
       name: `auto:${a.name}`,
+      // Automations should deliver results directly, not stage them as drafts
+      // pending user approval — otherwise a "9am digest" automation produces
+      // a draft the user must explicitly send.
+      attachDraftStaging: false,
     });
     await convex.mutation(api.automations.updateRun, {
       runId,
