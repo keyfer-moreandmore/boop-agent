@@ -45,18 +45,33 @@ async function runAutomation(a: {
   broadcast("automation_started", { automationId: a.automationId, runId, name: a.name });
 
   try {
-    const res = await spawnExecutionAgent({
-      task: `AUTOMATION "${a.name}": ${a.task}`,
-      integrations: a.integrations,
-      conversationId: a.conversationId,
-      name: `auto:${a.name}`,
-    });
-    await convex.mutation(api.automations.updateRun, {
-      runId,
-      status: res.status === "completed" ? "completed" : "failed",
-      result: res.result,
-      agentId: res.agentId,
-    });
+    // Reminder-only automations (no integrations) shouldn't spawn a sub-agent —
+    // a spawned agent inherits ambient tooling and tends to confabulate tool
+    // use (e.g. fake LinkedIn posts) when the real intent is just "ping me at
+    // 9am with this text". Deliver the task text directly instead.
+    let res: { status: "completed" | "failed" | "cancelled"; result: string; agentId?: string };
+    if (a.integrations.length === 0) {
+      res = { status: "completed", result: a.task };
+      await convex.mutation(api.automations.updateRun, {
+        runId,
+        status: "completed",
+        result: res.result,
+      });
+    } else {
+      const spawned = await spawnExecutionAgent({
+        task: `AUTOMATION "${a.name}": ${a.task}`,
+        integrations: a.integrations,
+        conversationId: a.conversationId,
+        name: `auto:${a.name}`,
+      });
+      res = spawned;
+      await convex.mutation(api.automations.updateRun, {
+        runId,
+        status: spawned.status === "completed" ? "completed" : "failed",
+        result: spawned.result,
+        agentId: spawned.agentId,
+      });
+    }
 
     if (a.notifyConversationId && res.result) {
       if (a.notifyConversationId.startsWith("sms:")) {
