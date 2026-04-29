@@ -30,6 +30,20 @@ describe("html helpers", () => {
     expect(out).toContain("<li>a</li>");
     expect(out).toContain("<li>b</li>");
   });
+
+  it("plain → html → plain round-trip: text before bullets keeps separator", () => {
+    const input = "intro\n- a\n- b";
+    const html = plainTextToHtml(input);
+    const back = htmlToPlainText(html);
+    expect(back).toBe("intro\n- a\n- b");
+  });
+
+  it("plain → html → plain round-trip: bullets between text", () => {
+    const input = "x\n- a\n- b\ny";
+    const html = plainTextToHtml(input);
+    const back = htmlToPlainText(html);
+    expect(back).toMatch(/^x\n- a\n- b\n+y$/);
+  });
 });
 
 describe("apple-notes script builders", () => {

@@ -22,7 +22,7 @@ export function htmlToPlainText(html: string): string {
   // <li>...</li> → "- text\n" (the trailing \n separates consecutive bullets;
   // the closing </li> is consumed by this regex so the block-close pass below
   // won't insert one).
-  out = out.replace(/<li[^>]*>(.*?)<\/li>/gi, "- $1\n");
+  out = out.replace(/<li[^>]*>(.*?)<\/li>/gis, "- $1\n");
   // Block-level closes → newline.
   out = out.replace(/<\/(p|div|h[1-6]|ul|ol|li)>/gi, "\n");
   // Strip remaining tags.
@@ -52,7 +52,9 @@ export function plainTextToHtml(text: string): string {
     const m = line.match(/^- (.*)$/);
     if (m) {
       if (!inList) {
-        bulletGroups.push(buf.join("<br>"));
+        if (buf.length > 0) {
+          bulletGroups.push(buf.join("<br>") + "<br>");
+        }
         buf = [];
         inList = true;
       }
@@ -269,7 +271,7 @@ export function buildAppleNotesIntegrationModule(): IntegrationModule {
 
           tool(
             "search_notes",
-            "Substring search across note titles and bodies. Up to `limit` hits across all folders.",
+            "Substring search across note titles and bodies (slower than list_notes — use a folder filter via list_notes when you can). Up to `limit` hits across all folders.",
             {
               query: z.string(),
               limit: z.number().int().positive().max(200).optional(),
@@ -299,7 +301,7 @@ export function buildAppleNotesIntegrationModule(): IntegrationModule {
 
           tool(
             "read_note",
-            "Read the full body of a note by id. HTML stripped to plain text (preserves '- ' bullets and newlines).",
+            "Read the full body of a note by id. HTML stripped to plain text — bullets and line breaks preserved, but attachments, images, drawings, tables, and checkboxes are not surfaced.",
             { id: z.string() },
             async (args) => {
               try {
