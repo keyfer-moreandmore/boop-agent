@@ -47,13 +47,13 @@ export function LocalPanel({ isDark }: Props) {
   const [busy, setBusy] = useState<Slug | "warmup" | null>(null);
 
   const refreshStatus = useCallback(async () => {
-    const r = await fetch("/apple/status");
+    const r = await fetch("/api/apple/status");
     if (r.ok) setStatus(await r.json());
   }, []);
 
   const fetchStats = useCallback(async (slug: Slug) => {
     try {
-      const r = await fetch(`/apple/stats/${slug}`);
+      const r = await fetch(`/api/apple/stats/${slug}`);
       if (r.ok) {
         const data = await r.json();
         setStats((prev) => ({ ...prev, [slug]: data }));
@@ -72,7 +72,7 @@ export function LocalPanel({ isDark }: Props) {
   const onTest = async (slug: Slug) => {
     setBusy(slug);
     try {
-      await fetch(`/apple/test/${slug}`, { method: "POST" });
+      await fetch(`/api/apple/test/${slug}`, { method: "POST" });
       await refreshStatus();
       await fetchStats(slug);
     } finally {
@@ -83,7 +83,7 @@ export function LocalPanel({ isDark }: Props) {
   const onWarmup = async () => {
     setBusy("warmup");
     try {
-      await fetch("/apple/warmup", { method: "POST" });
+      await fetch("/api/apple/warmup", { method: "POST" });
       await refreshStatus();
       await Promise.all(SLUGS.map((s) => fetchStats(s)));
     } finally {
