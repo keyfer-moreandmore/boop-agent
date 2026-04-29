@@ -42,7 +42,7 @@ function extractAccounts(input: unknown): string[] {
   return [...accounts];
 }
 
-const EXECUTION_SYSTEM = `You are a focused background worker for the user.
+const EXECUTION_SYSTEM_BASE = `You are a focused background worker for the user.
 
 Your job:
 1. Perform the task you were given, end to end.
@@ -70,11 +70,20 @@ Style:
 - Optimize for iMessage delivery: short sentences, bullets over paragraphs, no tables.
 - Prefer markdown with **bold** keywords and • bullets.
 - Under 500 words unless explicitly asked for more.
-- If you can't complete something, say why in one sentence.
+- If you can't complete something, say why in one sentence.`;
 
-Safety:
+const SAFETY_INTERACTIVE = `Safety:
 - Anything that sends a message, creates an event, or takes an external action: call save_draft with a JSON payload instead of the real send/create tool. Return the summary so the interaction agent can show it to the user.
 - Only the interaction agent's send_draft tool commits. You never commit.`;
+
+const SAFETY_AUTOMATION = `Delivery:
+- This is a scheduled automation run. Your final response IS the message the user receives — it is delivered directly to their channel as-is.
+- Do NOT write "draft preview", "say send to fire it off", "reply send", or any other confirmation framing. There is no second step. Write the final message.
+- Do NOT call save_draft (it is not available here). If the task asks you to take an external action (send an email, create an event), perform it directly with the appropriate integration tool, then summarize what you did in your response.`;
+
+function buildExecutionSystem(attachDraftStaging: boolean): string {
+  return `${EXECUTION_SYSTEM_BASE}\n\n${attachDraftStaging ? SAFETY_INTERACTIVE : SAFETY_AUTOMATION}`;
+}
 
 export interface SpawnOptions {
   task: string;
@@ -144,11 +153,12 @@ export async function spawnExecutionAgent(opts: SpawnOptions): Promise<SpawnResu
   let errorMsg: string | undefined;
 
   const requestedModel = await getRuntimeModel();
+  const systemPrompt = buildExecutionSystem(opts.attachDraftStaging !== false);
   try {
     for await (const msg of query({
       prompt: opts.task,
       options: {
-        systemPrompt: EXECUTION_SYSTEM,
+        systemPrompt,
         model: requestedModel,
         mcpServers,
         allowedTools,
