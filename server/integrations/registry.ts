@@ -26,6 +26,15 @@ export function getIntegration(name: string): IntegrationModule | undefined {
 }
 
 export async function loadIntegrations(): Promise<void> {
+  if (process.platform === "darwin") {
+    const { buildAppleRemindersIntegrationModule } = await import(
+      "./apple-reminders.js"
+    );
+    const { buildAppleNotesIntegrationModule } = await import("./apple-notes.js");
+    registerIntegration(buildAppleRemindersIntegrationModule());
+    registerIntegration(buildAppleNotesIntegrationModule());
+    console.log("[apple] registered: apple-reminders, apple-notes");
+  }
   const { registerComposioToolkits } = await import("./composio-loader.js");
   await registerComposioToolkits();
   const loaded = [...registry.keys()];
