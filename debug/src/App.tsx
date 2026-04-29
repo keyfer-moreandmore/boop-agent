@@ -10,6 +10,7 @@ import {
   DashboardSquare01Icon,
   ArrowShrink02Icon,
   Settings01Icon,
+  Apple01Icon,
 } from "@hugeicons/core-free-icons";
 import { api } from "../../convex/_generated/api.js";
 import { useSocket } from "./lib/useSocket.js";
@@ -21,6 +22,7 @@ import { EventsPanel } from "./components/EventsPanel.js";
 import { ConnectionsPanel } from "./components/ConnectionsPanel.js";
 import { ConsolidationPanel } from "./components/ConsolidationPanel.js";
 import { SettingsPanel } from "./components/SettingsPanel.js";
+import { LocalPanel } from "./components/LocalPanel.js";
 
 type View =
   | "dashboard"
@@ -30,7 +32,8 @@ type View =
   | "events"
   | "consolidation"
   | "connections"
-  | "settings";
+  | "settings"
+  | "local";
 
 type Theme = "dark" | "light";
 
@@ -43,6 +46,7 @@ const NAV_ICONS: Record<View, any> = {
   consolidation: ArrowShrink02Icon,
   connections: Link04Icon,
   settings: Settings01Icon,
+  local: Apple01Icon,
 };
 
 const NAV: { id: View; label: string }[] = [
@@ -54,6 +58,7 @@ const NAV: { id: View; label: string }[] = [
   { id: "consolidation", label: "Consolidation" },
   { id: "connections", label: "Connections" },
   { id: "settings", label: "Settings" },
+  { id: "local", label: "Local" },
 ];
 
 function getStoredTheme(): Theme {
@@ -230,6 +235,7 @@ export function App() {
             {view === "consolidation" && <ConsolidationPanel isDark={isDark} />}
             {view === "connections" && <ConnectionsPanel isDark={isDark} />}
             {view === "settings" && <SettingsPanel isDark={isDark} />}
+            {view === "local" && <LocalPanel isDark={isDark} />}
           </div>
         </main>
       </div>
