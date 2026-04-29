@@ -21,4 +21,9 @@ describe("jsonLiteral", () => {
   it("encodes objects", () => {
     expect(jsonLiteral({ a: 1, b: "x" })).toBe(`{"a":1,"b":"x"}`);
   });
+
+  it("escapes U+2028 / U+2029 line terminators (JS source-level hazard)", () => {
+    expect(jsonLiteral("a b")).toBe(`"a\\u2028b"`);
+    expect(jsonLiteral("x y")).toBe(`"x\\u2029y"`);
+  });
 });

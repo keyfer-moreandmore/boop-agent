@@ -32,7 +32,9 @@ export class OsaError extends Error {
  * NEVER concat user input directly — always go through this.
  */
 export function jsonLiteral(value: unknown): string {
-  return JSON.stringify(value);
+  return JSON.stringify(value)
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
 }
 
 function classifyStderr(stderr: string): OsaError["kind"] {
@@ -75,9 +77,10 @@ export async function runOsa<T = unknown>(
     const e = err as NodeJS.ErrnoException & {
       stderr?: string;
       killed?: boolean;
-      signal?: string;
+      signal?: NodeJS.Signals;
+      code?: number | string;
     };
-    if (e.killed && e.signal === "SIGTERM") {
+    if ((e.killed && e.signal === "SIGTERM") || e.code === "ETIMEDOUT") {
       throw new OsaError("timeout", `osascript timed out after ${timeoutMs}ms`);
     }
     const stderr = e.stderr ?? e.message ?? "";
