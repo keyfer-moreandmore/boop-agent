@@ -4,6 +4,7 @@ import { api } from "../convex/_generated/api.js";
 import { convex } from "./convex-client.js";
 import { availableIntegrations } from "./execution-agent.js";
 import { nextRunFor, validateSchedule } from "./automations.js";
+import { describeUserNow } from "./timezone-config.js";
 
 function randomId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -20,11 +21,15 @@ export function createAutomationMcp(conversationId: string) {
         "create_automation",
         `Schedule a recurring task. The agent will run the task on the schedule and reply with the result.
 
-Cron expressions (5 fields: min hour day-of-month month day-of-week). Examples:
-  "0 8 * * *"      — every day at 8am
+Cron expressions (5 fields: min hour day-of-month month day-of-week). Write times in the user's LOCAL clock — the runner attaches the user's stored timezone (from settings.user_timezone) automatically when evaluating the cron, so do NOT convert to UTC. If the user says "every morning at 10am" and they're on Central, pass "0 10 * * *" — it'll fire at 10am Central.
+
+Examples:
+  "0 8 * * *"      — every day at 8am (user-local)
   "*/15 * * * *"   — every 15 minutes
-  "0 9 * * 1-5"    — weekdays at 9am
-  "0 18 * * 0"     — Sundays at 6pm
+  "0 9 * * 1-5"    — weekdays at 9am (user-local)
+  "0 18 * * 0"     — Sundays at 6pm (user-local)
+
+If you don't yet know the user's timezone (get_config returns userTimezone=null), ASK before creating any time-of-day automation — otherwise it'll fire in the server's zone, which is almost always wrong.
 
 Use this for anything the user says "every [time]" or "remind me" about.
 Integrations available: ${integrationHint}`,
@@ -48,7 +53,13 @@ Integrations available: ${integrationHint}`,
             .describe("If true, send the result to this conversation when it runs."),
         },
         async (args) => {
-          const validation = validateSchedule(args.schedule);
+          // Resolve the user's timezone now and store it on the automation,
+          // so changing the global setting later doesn't shift existing
+          // schedules. Falls back to the server zone if unset (caller's
+          // responsibility — get_config will surface the null).
+          const tzInfo = await describeUserNow();
+          const timezone = tzInfo.timezone;
+          const validation = validateSchedule(args.schedule, timezone);
           if (!validation.valid) {
             return {
               content: [
@@ -60,23 +71,37 @@ Integrations available: ${integrationHint}`,
             };
           }
           const automationId = randomId("auto");
-          const nextRunAt = nextRunFor(args.schedule) ?? undefined;
+          const nextRunAt = nextRunFor(args.schedule, timezone) ?? undefined;
           await convex.mutation(api.automations.create, {
             automationId,
             name: args.name,
             task: args.task,
             integrations: args.integrations,
             schedule: args.schedule,
+            timezone,
             conversationId,
             notifyConversationId: args.notify ? conversationId : undefined,
             nextRunAt,
           });
-          const nextStr = nextRunAt ? new Date(nextRunAt).toLocaleString() : "unknown";
+          const nextStr = nextRunAt
+            ? new Intl.DateTimeFormat("en-US", {
+                timeZone: timezone,
+                weekday: "short",
+                month: "short",
+                day: "numeric",
+                hour: "numeric",
+                minute: "2-digit",
+                timeZoneName: "short",
+              }).format(new Date(nextRunAt))
+            : "unknown";
+          const tzNote = tzInfo.isExplicit
+            ? `timezone: ${timezone}`
+            : `timezone: ${timezone} (server fallback — user has not set theirs; ask them and call set_timezone)`;
           return {
             content: [
               {
                 type: "text" as const,
-                text: `Created automation ${automationId} "${args.name}" — next run: ${nextStr}.`,
+                text: `Created automation ${automationId} "${args.name}" — next run: ${nextStr} (${tzNote}).`,
               },
             ],
           };

@@ -28,7 +28,7 @@ Your only tools:
 - spawn_agent (dispatches a sub-agent that CAN touch the world)
 - create_automation / list_automations / toggle_automation / delete_automation
 - list_drafts / send_draft / reject_draft
-- get_config / set_model / list_integrations / search_composio_catalog / inspect_toolkit (self-inspection)
+- get_config / set_model / set_timezone / list_integrations / search_composio_catalog / inspect_toolkit (self-inspection)
 
 You cannot answer factual questions from your own knowledge. Not allowed.
 You have NO browser, NO WebSearch, NO WebFetch, NO file access, NO APIs.
@@ -102,9 +102,21 @@ Self-inspection (no spawn needed — answer instantly):
 - "What integrations / accounts are connected?" / "Which Gmail account?" → list_integrations
 - "Is there a tool for X?" / "Can you connect to Y?" → search_composio_catalog
 - "Is Slack connected?" / "What tools does Notion expose?" → inspect_toolkit (set includeTools=true if they want the tool list)
+- "I'm in Dallas" / "use central time" / "I'm in London" → set_timezone with an IANA ID or alias
+- "What time is it?" / "What's my timezone?" → get_config (returns userTimezone + currentLocalTime)
 Use these tools when the user asks about Boop's own configuration, connected
 accounts, or whether a service is reachable. They're cheap and synchronous —
 no ack required.
+
+Time / timezone:
+The user has a saved timezone in get_config.userTimezone. Whenever your reply
+or a sub-agent's task depends on local time (deadlines, "today", "9am
+tomorrow", RSVP windows, scheduling, "in N hours"), call get_config first to
+read it. If userTimezone is null, the system is currently using
+timezoneFallback (the server's local zone, which may be wrong) — ASK the
+user once ("what timezone are you in?") and call set_timezone with their
+answer. Don't silently guess from city names mentioned in passing — confirm
+before saving.
 
 Available integrations for spawn_agent: {{INTEGRATIONS}}
 
@@ -115,6 +127,10 @@ interface HandleOpts {
   content: string;
   turnTag?: string;
   onThinking?: (chunk: string) => void;
+  // "proactive" persists the inbound message with role=system instead of
+  // role=user, so the synthetic notice the IA receives doesn't pollute the
+  // user-message history. Defaults to "user".
+  kind?: "user" | "proactive";
 }
 
 function randomId(prefix: string): string {
@@ -125,13 +141,17 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
   const turnId = randomId("turn");
   const integrations = availableIntegrations();
 
+  const inboundRole = opts.kind === "proactive" ? "system" : "user";
   await convex.mutation(api.messages.send, {
     conversationId: opts.conversationId,
-    role: "user",
+    role: inboundRole,
     content: opts.content,
     turnId,
   });
-  broadcast("user_message", { conversationId: opts.conversationId, content: opts.content });
+  broadcast(opts.kind === "proactive" ? "proactive_notice" : "user_message", {
+    conversationId: opts.conversationId,
+    content: opts.content,
+  });
 
   const memoryServer = createMemoryMcp(opts.conversationId);
   const automationServer = createAutomationMcp(opts.conversationId);
@@ -155,7 +175,12 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
               content: [{ type: "text" as const, text: "Empty ack skipped." }],
             };
           }
-          if (opts.conversationId.startsWith("sms:")) {
+          // Skip the iMessage send for proactive turns — those go out as a
+          // single self-contained notice from dispatchProactiveNotice. If the
+          // IA calls send_ack here on a proactive turn, the user would get
+          // two iMessages (the ack + the final reply). Still persist + log
+          // so the debug UI sees it.
+          if (opts.conversationId.startsWith("sms:") && opts.kind !== "proactive") {
             const number = opts.conversationId.slice(4);
             await sendImessage(number, text);
           }
@@ -267,6 +292,7 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
           "mcp__boop-ack__send_ack",
           "mcp__boop-self__get_config",
           "mcp__boop-self__set_model",
+          "mcp__boop-self__set_timezone",
           "mcp__boop-self__list_integrations",
           "mcp__boop-self__search_composio_catalog",
           "mcp__boop-self__inspect_toolkit",
@@ -290,6 +316,12 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
       },
     })) {
       if (msg.type === "assistant") {
+        // Reset `reply` on each new assistant turn so only the LAST turn's
+        // text becomes the user-facing iMessage. Earlier turns are usually
+        // pre-tool-call narration ("Got it — saving that now.") that, if
+        // concatenated with the post-tool-result final text, sends as one
+        // smushed iMessage. Streaming via onThinking still sees everything.
+        reply = "";
         for (const block of msg.message.content) {
           if (block.type === "text") {
             // Multiple text blocks after the last tool call get joined with a
@@ -340,12 +372,20 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
   broadcast("assistant_message", { conversationId: opts.conversationId, content: reply });
 
   // Background extraction — fire-and-forget; don't block the reply.
-  extractAndStore({
-    conversationId: opts.conversationId,
-    userMessage: opts.content,
-    assistantReply: reply,
-    turnId,
-  }).catch((err) => console.error("[interaction] extraction error", err));
+  // Skip on proactive turns: the "user message" is a synthetic
+  // [proactive notice] derived from email content, not something the user
+  // said. Letting extractAndStore run on it would persist email-derived
+  // facts ("Alice asked about Q4 report") as user preferences/memory — the
+  // same store the classifier reads on the next event, creating a feedback
+  // loop where surfaced emails reshape future classification.
+  if (opts.kind !== "proactive") {
+    extractAndStore({
+      conversationId: opts.conversationId,
+      userMessage: opts.content,
+      assistantReply: reply,
+      turnId,
+    }).catch((err) => console.error("[interaction] extraction error", err));
+  }
 
   return reply;
 }

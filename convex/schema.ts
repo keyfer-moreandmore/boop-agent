@@ -97,6 +97,7 @@ export default defineSchema({
       v.literal("consolidation-proposer"),
       v.literal("consolidation-adversary"),
       v.literal("consolidation-judge"),
+      v.literal("proactive"),
     ),
     conversationId: v.optional(v.string()),
     turnId: v.optional(v.string()),
@@ -150,6 +151,11 @@ export default defineSchema({
     task: v.string(),
     integrations: v.array(v.string()),
     schedule: v.string(),
+    // IANA timezone the cron expression is evaluated in. Stored at create
+    // time so changing the user's global timezone later doesn't shift
+    // existing automations. Optional for backwards compatibility — pre-TZ
+    // automations fall back to the user's current setting at run time.
+    timezone: v.optional(v.string()),
     enabled: v.boolean(),
     conversationId: v.optional(v.string()),
     notifyConversationId: v.optional(v.string()),

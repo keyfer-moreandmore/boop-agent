@@ -246,6 +246,27 @@ async function autoRegisterWebhook(publicUrl) {
   await new Promise((r) => child.on("exit", r));
 }
 
+async function autoRegisterComposioWebhook(publicUrl) {
+  if (envVars.COMPOSIO_AUTO_WEBHOOK === "false") return;
+  if (!envVars.COMPOSIO_API_KEY) return;
+  const prefix = `${C.ngrok}composio${C.reset} │ `;
+  const child = spawn("npx", ["tsx", "scripts/composio-webhook.ts", publicUrl], {
+    cwd: root,
+    env: { ...process.env },
+  });
+  child.stdout.on("data", (d) => {
+    for (const line of d.toString().split("\n")) {
+      if (line.trim()) process.stdout.write(prefix + line + "\n");
+    }
+  });
+  child.stderr.on("data", (d) => {
+    for (const line of d.toString().split("\n")) {
+      if (line.trim()) process.stdout.write(prefix + line + "\n");
+    }
+  });
+  await new Promise((r) => child.on("exit", r));
+}
+
 Promise.all([
   serverChild.ready,
   convexChild.ready,
@@ -260,6 +281,10 @@ Promise.all([
         if (!ngrokDomain) {
           await autoRegisterWebhook(ngrokUrl);
         }
+        // Composio webhook subscription is fully programmatic (PATCHable),
+        // so we can refresh it on every restart regardless of whether the
+        // domain is reserved.
+        await autoRegisterComposioWebhook(ngrokUrl);
         showBanner(ngrokUrl, Boolean(ngrokDomain));
       } else {
         console.log(

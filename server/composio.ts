@@ -580,3 +580,27 @@ export function buildComposioIntegrationModule(slug: string): IntegrationModule 
     },
   };
 }
+
+// Register (or refresh) a trigger instance for a single connected account.
+// `triggers.create` is described as upsert in Composio docs — calling it again
+// for the same (slug, connected_account_id) pair is a no-op or re-enables a
+// disabled instance. Returns the trigger ID for diagnostics.
+export async function ensureTrigger(
+  triggerSlug: string,
+  connectedAccountId: string,
+): Promise<string | null> {
+  const composio = getComposio();
+  if (!composio) return null;
+  try {
+    const resp = await composio.triggers.create(boopUserId(), triggerSlug, {
+      connectedAccountId,
+    });
+    return resp.triggerId ?? null;
+  } catch (err) {
+    console.warn(
+      `[composio] ensureTrigger failed: ${triggerSlug} for ${connectedAccountId}`,
+      err,
+    );
+    return null;
+  }
+}

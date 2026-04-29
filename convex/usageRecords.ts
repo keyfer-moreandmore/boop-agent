@@ -8,6 +8,7 @@ const sourceV = v.union(
   v.literal("consolidation-proposer"),
   v.literal("consolidation-adversary"),
   v.literal("consolidation-judge"),
+  v.literal("proactive"),
 );
 
 export const record = mutation({

@@ -13,6 +13,7 @@ import { startHeartbeatLoop } from "./heartbeat.js";
 import { startConsolidationLoop } from "./consolidation.js";
 import { cancelAgent, retryAgent } from "./execution-agent.js";
 import { createComposioRouter } from "./composio-routes.js";
+import { ensureProactiveWatcher } from "./proactive-email.js";
 
 async function main() {
   // Kick off integration loading in the background so a slow third-party API
@@ -23,8 +24,24 @@ async function main() {
   startHeartbeatLoop();
   startConsolidationLoop();
 
+  // If a stable public URL is configured, register the Composio webhook +
+  // Gmail trigger now. For ngrok-based dev, scripts/dev.mjs drives the same
+  // function once the ngrok URL is known, so we skip when only the local
+  // PORT default is available.
+  const stableUrl = process.env.PUBLIC_URL;
+  if (stableUrl && !stableUrl.includes("localhost")) {
+    ensureProactiveWatcher(stableUrl).catch((err) =>
+      console.error("[proactive] startup failed", err),
+    );
+  }
+
   const app = express();
   app.use(cors());
+  // Composio webhook receiver must read raw bytes for HMAC verification, so
+  // its body parser is mounted BEFORE the global express.json. Without this
+  // ordering the JSON parser consumes the stream first and the raw buffer
+  // arrives empty.
+  app.use("/composio/webhook", express.raw({ type: "application/json", limit: "2mb" }));
   app.use(express.json({ limit: "2mb" }));
 
   app.get("/health", (_req, res) => {
