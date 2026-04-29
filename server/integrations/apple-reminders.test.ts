@@ -4,6 +4,7 @@ import {
   buildListRemindersScript,
   buildSearchRemindersScript,
   buildGetReminderScript,
+  formatDue,
 } from "./apple-reminders.js";
 
 describe("apple-reminders script builders", () => {
@@ -35,5 +36,23 @@ describe("apple-reminders script builders", () => {
       id: "x-apple-reminderkit://REMCDReminder/abc-123",
     });
     expect(s).toContain(`"x-apple-reminderkit://REMCDReminder/abc-123"`);
+  });
+});
+
+describe("formatDue", () => {
+  it("formats a non-midnight datetime in local tz", () => {
+    // Use an explicit local-time constructor so the test is TZ-independent.
+    // April 29, 2026 5:00 PM local.
+    const d = new Date(2026, 3, 29, 17, 0, 0);
+    expect(formatDue(d.toISOString())).toBe("due 2026-04-29 17:00");
+  });
+
+  it("omits time at local midnight", () => {
+    const d = new Date(2026, 3, 29, 0, 0, 0);
+    expect(formatDue(d.toISOString())).toBe("due 2026-04-29");
+  });
+
+  it("returns 'no due date' for null", () => {
+    expect(formatDue(null)).toBe("no due date");
   });
 });

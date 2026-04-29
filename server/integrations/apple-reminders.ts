@@ -119,12 +119,13 @@ export function buildGetReminderScript(args: GetReminderArgs): string {
   return `
     const Reminders = Application('Reminders');
     const id = ${jsonLiteral(args.id)};
+    let result = null;
     for (const l of Reminders.lists()) {
       const matches = l.reminders.whose({ id })();
       if (matches.length) {
         const r = matches[0];
         const d = r.dueDate();
-        return JSON.stringify({
+        result = {
           id: r.id(),
           name: r.name(),
           listName: l.name(),
@@ -132,10 +133,12 @@ export function buildGetReminderScript(args: GetReminderArgs): string {
           priority: r.priority(),
           notes: r.body() || null,
           completed: r.completed(),
-        });
+        };
+        break;
       }
     }
-    throw new Error("Reminder not found: " + id);
+    if (!result) throw new Error("Reminder not found: " + id);
+    JSON.stringify(result);
   `;
 }
 
@@ -158,15 +161,20 @@ const PRIORITY_LABEL: Record<number, string> = {
   9: "low",
 };
 
-function formatDue(iso: string | null): string {
+export function formatDue(iso: string | null): string {
   if (!iso) return "no due date";
   const d = new Date(iso);
-  const date = d.toISOString().slice(0, 10);
-  const time = d.toTimeString().slice(0, 5);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const min = String(d.getMinutes()).padStart(2, "0");
+  const date = `${yyyy}-${mm}-${dd}`;
+  const time = `${hh}:${min}`;
   return time === "00:00" ? `due ${date}` : `due ${date} ${time}`;
 }
 
-function formatReminderLine(r: ReminderRow): string {
+export function formatReminderLine(r: ReminderRow): string {
   const prio = PRIORITY_LABEL[r.priority] ?? "none";
   const status = r.completed ? " [done]" : "";
   return `[${r.id}] ${r.name} · ${r.listName} · ${formatDue(r.due)} · priority ${prio}${status}`;
