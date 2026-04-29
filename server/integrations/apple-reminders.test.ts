@@ -4,6 +4,10 @@ import {
   buildListRemindersScript,
   buildSearchRemindersScript,
   buildGetReminderScript,
+  buildCreateReminderScript,
+  buildUpdateReminderScript,
+  buildCompleteReminderScript,
+  buildDeleteReminderScript,
   formatDue,
 } from "./apple-reminders.js";
 
@@ -54,5 +58,35 @@ describe("formatDue", () => {
 
   it("returns 'no due date' for null", () => {
     expect(formatDue(null)).toBe("no due date");
+  });
+});
+
+describe("apple-reminders write builders", () => {
+  it("create_reminder: emits a new reminder with given fields", () => {
+    const s = buildCreateReminderScript({
+      title: "Pick up dry cleaning",
+      list: "Personal",
+      due: "2026-04-29T17:00:00",
+      priority: "high",
+    });
+    expect(s).toContain(`"Pick up dry cleaning"`);
+    expect(s).toContain(`"Personal"`);
+    expect(s).toContain(`"2026-04-29T17:00:00"`);
+    expect(s).toContain("Reminders.Reminder");
+  });
+
+  it("update_reminder: only updates provided fields", () => {
+    const s = buildUpdateReminderScript({ id: "x-apple-...abc", title: "new title" });
+    expect(s).toContain(`"new title"`);
+  });
+
+  it("complete_reminder: sets completed = true", () => {
+    const s = buildCompleteReminderScript({ id: "x-apple-...abc" });
+    expect(s).toContain("completed = true");
+  });
+
+  it("delete_reminder: deletes by id", () => {
+    const s = buildDeleteReminderScript({ id: "x-apple-...abc" });
+    expect(s).toContain(".delete()");
   });
 });

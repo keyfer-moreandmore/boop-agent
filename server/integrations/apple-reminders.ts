@@ -142,6 +142,127 @@ export function buildGetReminderScript(args: GetReminderArgs): string {
   `;
 }
 
+// ─────────────────────────────── Write builders ────────────────────────────
+
+const PRIORITY_NUM: Record<string, number> = { none: 0, high: 1, medium: 5, low: 9 };
+
+export interface CreateReminderArgs {
+  title: string;
+  list?: string;
+  due?: string;
+  notes?: string;
+  priority?: "none" | "low" | "medium" | "high";
+}
+
+export function buildCreateReminderScript(args: CreateReminderArgs): string {
+  const prio = PRIORITY_NUM[args.priority ?? "none"];
+  return `
+    const Reminders = Application('Reminders');
+    const args = ${jsonLiteral(args)};
+    const list = args.list
+      ? Reminders.lists.whose({ name: args.list })()[0]
+      : Reminders.defaultList();
+    if (!list) throw new Error("List not found: " + args.list);
+    const props = { name: args.title };
+    if (args.due) props.dueDate = new Date(args.due);
+    if (args.notes) props.body = args.notes;
+    props.priority = ${prio};
+    const r = Reminders.Reminder(props);
+    list.reminders.push(r);
+    JSON.stringify({ id: r.id(), name: r.name(), listName: list.name() });
+  `;
+}
+
+export interface UpdateReminderArgs {
+  id: string;
+  title?: string;
+  list?: string;
+  due?: string | null;
+  notes?: string;
+  priority?: "none" | "low" | "medium" | "high";
+}
+
+export function buildUpdateReminderScript(args: UpdateReminderArgs): string {
+  return `
+    const Reminders = Application('Reminders');
+    const args = ${jsonLiteral(args)};
+    const PRIO = ${jsonLiteral(PRIORITY_NUM)};
+    let target = null, sourceList = null;
+    for (const l of Reminders.lists()) {
+      const m = l.reminders.whose({ id: args.id })();
+      if (m.length) { target = m[0]; sourceList = l; break; }
+    }
+    if (!target) throw new Error("Reminder not found: " + args.id);
+    if (args.title !== undefined) target.name = args.title;
+    if (args.notes !== undefined) target.body = args.notes;
+    if (args.due === null) target.dueDate = null;
+    else if (args.due !== undefined) target.dueDate = new Date(args.due);
+    if (args.priority !== undefined) target.priority = PRIO[args.priority];
+    if (args.list !== undefined && args.list !== sourceList.name()) {
+      const dest = Reminders.lists.whose({ name: args.list })()[0];
+      if (!dest) throw new Error("Destination list not found: " + args.list);
+      // JXA can't move reminders directly; recreate in destination.
+      const newProps = {
+        name: target.name(),
+        body: target.body(),
+        priority: target.priority(),
+      };
+      const d = target.dueDate();
+      if (d) newProps.dueDate = d;
+      const newR = Reminders.Reminder(newProps);
+      dest.reminders.push(newR);
+      target.delete();
+      target = newR;
+      sourceList = dest;
+    }
+    JSON.stringify({ id: target.id(), name: target.name(), listName: sourceList.name() });
+  `;
+}
+
+export interface CompleteReminderArgs {
+  id: string;
+}
+
+export function buildCompleteReminderScript(args: CompleteReminderArgs): string {
+  return `
+    const Reminders = Application('Reminders');
+    const id = ${jsonLiteral(args.id)};
+    let result = null;
+    for (const l of Reminders.lists()) {
+      const m = l.reminders.whose({ id })();
+      if (m.length) {
+        m[0].completed = true;
+        result = { id, completed: true };
+        break;
+      }
+    }
+    if (!result) throw new Error("Reminder not found: " + id);
+    JSON.stringify(result);
+  `;
+}
+
+export interface DeleteReminderArgs {
+  id: string;
+}
+
+export function buildDeleteReminderScript(args: DeleteReminderArgs): string {
+  return `
+    const Reminders = Application('Reminders');
+    const id = ${jsonLiteral(args.id)};
+    let result = null;
+    for (const l of Reminders.lists()) {
+      const m = l.reminders.whose({ id })();
+      if (m.length) {
+        m[0].delete();
+        result = { id, deleted: true };
+        break;
+      }
+    }
+    if (!result) throw new Error("Reminder not found: " + id);
+    JSON.stringify(result);
+  `;
+}
+
 // ─────────────────────────────── Formatting ─────────────────────────────────
 
 interface ReminderRow {
@@ -312,7 +433,82 @@ export function buildAppleRemindersIntegrationModule(): IntegrationModule {
             },
           ),
 
-          // Write tools added in Task 4.
+          tool(
+            "create_reminder",
+            "Create a reminder. ALWAYS go through save_draft first; this tool only commits when invoked by send_draft.",
+            {
+              title: z.string(),
+              list: z.string().optional(),
+              due: z.string().optional().describe("ISO 8601 datetime in local time (e.g. 2026-04-29T17:00:00)."),
+              notes: z.string().optional(),
+              priority: z.enum(["none", "low", "medium", "high"]).optional(),
+            },
+            async (args) => {
+              try {
+                const r = await runOsa<{ id: string; name: string; listName: string }>(
+                  buildCreateReminderScript(args),
+                );
+                return {
+                  content: [{ type: "text" as const, text: `Created [${r.id}] ${r.name} in ${r.listName}` }],
+                };
+              } catch (err) {
+                return { content: [{ type: "text" as const, text: osaErrorToText(err) }], isError: true };
+              }
+            },
+          ),
+
+          tool(
+            "update_reminder",
+            "Update a reminder by id. Pass only fields to change. ALWAYS go through save_draft first.",
+            {
+              id: z.string(),
+              title: z.string().optional(),
+              list: z.string().optional(),
+              due: z.string().nullable().optional().describe("ISO 8601, or null to clear."),
+              notes: z.string().optional(),
+              priority: z.enum(["none", "low", "medium", "high"]).optional(),
+            },
+            async (args) => {
+              try {
+                const r = await runOsa<{ id: string; name: string; listName: string }>(
+                  buildUpdateReminderScript(args),
+                );
+                return {
+                  content: [{ type: "text" as const, text: `Updated [${r.id}] ${r.name} (${r.listName})` }],
+                };
+              } catch (err) {
+                return { content: [{ type: "text" as const, text: osaErrorToText(err) }], isError: true };
+              }
+            },
+          ),
+
+          tool(
+            "complete_reminder",
+            "Mark a reminder as completed. ALWAYS go through save_draft first.",
+            { id: z.string() },
+            async (args) => {
+              try {
+                await runOsa(buildCompleteReminderScript(args));
+                return { content: [{ type: "text" as const, text: `Completed ${args.id}` }] };
+              } catch (err) {
+                return { content: [{ type: "text" as const, text: osaErrorToText(err) }], isError: true };
+              }
+            },
+          ),
+
+          tool(
+            "delete_reminder",
+            "Delete a reminder permanently. Cannot be undone. ALWAYS go through save_draft first.",
+            { id: z.string() },
+            async (args) => {
+              try {
+                await runOsa(buildDeleteReminderScript(args));
+                return { content: [{ type: "text" as const, text: `Deleted ${args.id}` }] };
+              } catch (err) {
+                return { content: [{ type: "text" as const, text: osaErrorToText(err) }], isError: true };
+              }
+            },
+          ),
         ],
       }),
   };
