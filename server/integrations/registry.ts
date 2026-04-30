@@ -48,18 +48,28 @@ export async function buildMcpServersForIntegrations(
   conversationId?: string,
 ): Promise<Record<string, McpSdkServerConfigWithInstance>> {
   const ctx = makeContext(conversationId);
+  // Parallelize: each toolkit's createServer hits Composio (auth config lookup,
+  // session create, tool list). Multi-toolkit automations were paying the sum of
+  // those latencies; now they pay the max.
+  const built = await Promise.all(
+    names.map(async (name) => {
+      const mod = registry.get(name);
+      if (!mod) {
+        console.warn(`[integrations] unknown integration: ${name}`);
+        return null;
+      }
+      try {
+        const server = await mod.createServer(ctx);
+        return [name, server] as const;
+      } catch (err) {
+        console.error(`[integrations] failed to build ${name}`, err);
+        return null;
+      }
+    }),
+  );
   const out: Record<string, McpSdkServerConfigWithInstance> = {};
-  for (const name of names) {
-    const mod = registry.get(name);
-    if (!mod) {
-      console.warn(`[integrations] unknown integration: ${name}`);
-      continue;
-    }
-    try {
-      out[name] = await mod.createServer(ctx);
-    } catch (err) {
-      console.error(`[integrations] failed to build ${name}`, err);
-    }
+  for (const entry of built) {
+    if (entry) out[entry[0]] = entry[1];
   }
   return out;
 }

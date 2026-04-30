@@ -165,6 +165,44 @@ export async function listToolkitMeta(): Promise<Map<string, ToolkitMeta>> {
 const toolsBySlugCache = new Map<string, { at: number; tools: ToolSummary[] }>();
 const TOOLS_TTL_MS = 10 * 60 * 1000;
 
+// `listConnectedToolkits()` is on every hot path — agent spawn, /toolkits route,
+// startup. It paginates connected accounts and fires a whoami tool per active
+// account, so a single call can take 1–5s. Cache the result so repeated callers
+// inside a 30s window share one network round-trip.
+//
+// Invalidate explicitly after disconnect/authorize via
+// `invalidateConnectedToolkitsCache()` — newly OAuth'd connections still take
+// up to 30s to appear without that hook, since the OAuth callback is handled by
+// Composio, not boop.
+let connectedToolkitsCache: { at: number; value: ConnectedToolkit[] } | null = null;
+const CONNECTED_TOOLKITS_TTL_MS = 30 * 1000;
+let inFlightConnectedToolkits: Promise<ConnectedToolkit[]> | null = null;
+
+export function invalidateConnectedToolkitsCache(): void {
+  connectedToolkitsCache = null;
+}
+
+// Per-toolkit auth-config lookup is hit on every spawn that uses the toolkit.
+// The data changes only when the user adds/removes a config (rare). 60s TTL
+// keeps it warm across a stretch of automation runs without staleness pain.
+const authConfigBySlugCache = new Map<string, { at: number; id: string | null }>();
+const AUTH_CONFIG_TTL_MS = 60 * 1000;
+
+async function getAuthConfigIdForToolkit(slug: string): Promise<string | null> {
+  const cached = authConfigBySlugCache.get(slug);
+  if (cached && Date.now() - cached.at < AUTH_CONFIG_TTL_MS) return cached.id;
+  const composio = getComposio();
+  if (!composio) return null;
+  const id = (await composio.authConfigs.list({ toolkit: slug })).items[0]?.id ?? null;
+  authConfigBySlugCache.set(slug, { at: Date.now(), id });
+  return id;
+}
+
+function invalidateAuthConfigCache(slug?: string): void {
+  if (slug) authConfigBySlugCache.delete(slug);
+  else authConfigBySlugCache.clear();
+}
+
 export async function listToolsForToolkit(slug: string): Promise<ToolSummary[]> {
   const cached = toolsBySlugCache.get(slug);
   if (cached && Date.now() - cached.at < TOOLS_TTL_MS) return cached.tools;
@@ -342,6 +380,23 @@ async function getIdentityFor(
 }
 
 export async function listConnectedToolkits(): Promise<ConnectedToolkit[]> {
+  const cached = connectedToolkitsCache;
+  if (cached && Date.now() - cached.at < CONNECTED_TOOLKITS_TTL_MS) {
+    return cached.value;
+  }
+  // Coalesce concurrent callers (e.g. /toolkits route + parallel agent spawns)
+  // onto a single in-flight fetch instead of stampeding Composio.
+  if (inFlightConnectedToolkits) return inFlightConnectedToolkits;
+  inFlightConnectedToolkits = listConnectedToolkitsUncached().then((value) => {
+    connectedToolkitsCache = { at: Date.now(), value };
+    return value;
+  }).finally(() => {
+    inFlightConnectedToolkits = null;
+  });
+  return inFlightConnectedToolkits;
+}
+
+async function listConnectedToolkitsUncached(): Promise<ConnectedToolkit[]> {
   const composio = getComposio();
   if (!composio) return [];
   try {
@@ -475,6 +530,7 @@ export async function renameConnection(connectionId: string, alias: string): Pro
   const composio = getComposio();
   if (!composio) throw new Error("COMPOSIO_API_KEY not set");
   await composio.connectedAccounts.update(connectionId, { alias });
+  invalidateConnectedToolkitsCache();
 }
 
 export class ComposioNeedsAuthConfigError extends Error {
@@ -504,9 +560,9 @@ export async function authorizeToolkit(
   //    the dashboard would still trip "require auth configs but none exist" on
   //    the previous session.authorize-based code path.
   let authConfigId: string;
-  const existingConfig = (await composio.authConfigs.list({ toolkit: slug })).items[0];
-  if (existingConfig) {
-    authConfigId = existingConfig.id;
+  const existingConfigId = await getAuthConfigIdForToolkit(slug);
+  if (existingConfigId) {
+    authConfigId = existingConfigId;
   } else {
     try {
       const created = await composio.authConfigs.create(slug, {
@@ -514,6 +570,7 @@ export async function authorizeToolkit(
         name: `${displayNameFor(slug)} Auth Config`,
       });
       authConfigId = created.id;
+      invalidateAuthConfigCache(slug);
     } catch (err) {
       // 400 here means Composio doesn't host a managed OAuth app for this toolkit —
       // user has to register their own at the toolkit's dev portal and add it via
@@ -533,6 +590,10 @@ export async function authorizeToolkit(
     ...(opts?.callbackUrl ? { callbackUrl: opts.callbackUrl } : {}),
     ...(opts?.alias ? { alias: opts.alias } : {}),
   });
+  // The new connection is INITIATED (not yet ACTIVE) — but cached results from
+  // before this call won't reflect it, so drop the cache so the next /toolkits
+  // fetch sees the pending row.
+  invalidateConnectedToolkitsCache();
   return { redirectUrl: conn.redirectUrl ?? null, connectionId: conn.id };
 }
 
@@ -540,6 +601,56 @@ export async function disconnectToolkit(connectionId: string): Promise<void> {
   const composio = getComposio();
   if (!composio) throw new Error("COMPOSIO_API_KEY not set");
   await composio.connectedAccounts.delete(connectionId);
+  invalidateConnectedToolkitsCache();
+}
+
+// Composio tool calls occasionally surface a transient
+// `{successful:false,error:"Request timed out.",data:null}` payload — usually
+// when the upstream provider (Linear especially) is slow and Composio's 60s
+// internal timeout fires before the request completes. The Composio SDK's
+// built-in retries only cover network-level failures, not a fully-resolved
+// timeout response. Wrap each tool's handler so the agent gets one transparent
+// retry before the error reaches the model.
+function isTimeoutResult(result: unknown): boolean {
+  const content = (result as { content?: Array<{ type?: string; text?: string }> })?.content;
+  const text = Array.isArray(content) ? content[0]?.text : undefined;
+  if (typeof text !== "string") return false;
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed?.successful === false && typeof parsed?.error === "string") {
+      return /time(d)?\s*out|timeout/i.test(parsed.error);
+    }
+  } catch {
+    // not JSON → not the structured timeout payload we're looking for
+  }
+  return false;
+}
+
+type ToolDef = {
+  name: string;
+  description: string;
+  inputSchema: unknown;
+  handler: (args: Record<string, unknown>, extra: unknown) => Promise<unknown>;
+};
+
+function withTimeoutRetry<T extends ToolDef>(toolDef: T, slug: string): T {
+  const original = toolDef.handler;
+  const wrapped = async (args: Record<string, unknown>, extra: unknown) => {
+    const first = await original(args, extra);
+    if (!isTimeoutResult(first)) return first;
+    console.log(
+      `[composio:${slug}] tool ${toolDef.name} timed out — retrying once`,
+    );
+    await new Promise((r) => setTimeout(r, 500));
+    const second = await original(args, extra);
+    if (isTimeoutResult(second)) {
+      console.log(
+        `[composio:${slug}] tool ${toolDef.name} timed out on retry — surfacing to model`,
+      );
+    }
+    return second;
+  };
+  return { ...toolDef, handler: wrapped };
 }
 
 export function buildComposioIntegrationModule(slug: string): IntegrationModule {
@@ -562,20 +673,21 @@ export function buildComposioIntegrationModule(slug: string): IntegrationModule 
       // to auto-create one and 400s for BYO toolkits (Twitter etc.) that don't
       // have a managed OAuth app available — error message even names the fix:
       // "Please specify them in auth_configs."
-      const authConfig = (await composio.authConfigs.list({ toolkit: slug })).items[0];
+      const authConfigId = await getAuthConfigIdForToolkit(slug);
       const session = await composio.create(boopUserId(), {
         toolkits: [slug],
         manageConnections: false,
-        ...(authConfig ? { authConfigs: { [slug]: authConfig.id } } : {}),
+        ...(authConfigId ? { authConfigs: { [slug]: authConfigId } } : {}),
         ...(activeCount >= 2
           ? { multiAccount: { enable: true, requireExplicitSelection: true } }
           : {}),
       });
       const tools = await session.tools();
+      const wrapped = tools.map((t) => withTimeoutRetry(t, slug));
       return createSdkMcpServer({
         name: slug,
         version: "0.1.0",
-        tools,
+        tools: wrapped,
       });
     },
   };
