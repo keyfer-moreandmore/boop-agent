@@ -8,6 +8,15 @@ Format:
 
 ---
 
+## Unreleased — Apple Reminders + Notes integrations
+
+- Added: `apple-reminders` and `apple-notes` integration modules (macOS-only). Auto-registered on `darwin` with 16 tools total — full read/write surface via AppleScript / JXA. Writes go through the existing draft flow with `apple-*.create / .update / .delete` kinds.
+- Added: "Local" tab in the debug dashboard. Surfaces module status, macOS Automation permissions, and live counts (lists / reminders / due-today, folders / notes).
+- Added: `npm run apple:permissions` CLI to trigger macOS Automation prompts up front, so the agent doesn't first-touch them mid-turn.
+- Added: `server/integrations/apple-script.ts` helper for safe `osascript` execution (`runOsa<T>`, `OsaError` with `permission` / `not_found` / `app_not_running` / `timeout` / `unknown` discriminator, `jsonLiteral` that escapes U+2028/U+2029).
+- Added: `server/apple-routes.ts` (`/apple/status`, `/apple/test/:slug`, `/apple/warmup`, `/apple/stats/:slug`) for the dashboard.
+- See `INTEGRATIONS.md` for full tool list and setup notes.
+
 ## Unreleased — Proactive email surfacing
 
 - Added: webhook-driven Gmail watcher. On boot (or on every `npm run dev` ngrok URL change), Boop registers a project-level webhook subscription against Composio's `/api/v3.1/webhook_subscriptions` endpoint and a `GMAIL_NEW_GMAIL_MESSAGE` trigger instance per active Gmail connection. When Composio fires `composio.trigger.message`, the new `POST /composio/webhook` route verifies the HMAC signature, runs a Haiku classifier, and on a positive decision routes the summary into the interaction agent as a synthetic `role="system"` message — the IA decides the iMessage tone and any follow-up.
@@ -31,7 +40,6 @@ Format:
 - Fixed (Greptile P1, prior review): `BOOP_USER_PHONE` was used verbatim to construct the proactive `conversationId`. A bare-10-digit env value produced an `sms:NNNNNNNNNN` conversation that didn't match the `sms:+1NNNNNNNNNN` ID Sendblue builds for inbound messages from the same person, splitting the thread. Now normalized to E.164 in `dispatchProactiveNotice`.
 - Fixed (Greptile P1, prior review): defensive null-guard on `verifyWebhook` result in the `/composio/webhook` handler — if a future SDK version returned a payload-less result instead of throwing on bad signature, the dispatch would crash post-ack with an unhandled rejection.
 - Fixed: proactive dispatch was running the IA but never sending the IA's reply over iMessage — `handleUserMessage` only sends from inside `send_ack`; the final reply is the caller's responsibility (matches the user-driven path in `server/sendblue.ts`). `dispatchProactiveNotice` now sends and persists the reply, with a fallback to the raw classifier summary if the IA stays silent.
-
 ## Unreleased — Self-inspection & runtime model switching
 
 - Added: `server/self-tools.ts` — interaction-agent MCP server (`boop-self`) exposing `get_config`, `list_integrations`, `search_composio_catalog`, `inspect_toolkit`, and `set_model`. Lets the user ask Boop about its own configuration from iMessage without spawning a sub-agent.

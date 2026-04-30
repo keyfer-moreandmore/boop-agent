@@ -14,6 +14,7 @@ import { startConsolidationLoop } from "./consolidation.js";
 import { cancelAgent, retryAgent } from "./execution-agent.js";
 import { createComposioRouter } from "./composio-routes.js";
 import { ensureProactiveWatcher } from "./proactive-email.js";
+import { createAppleRouter } from "./apple-routes.js";
 
 async function main() {
   // Kick off integration loading in the background so a slow third-party API
@@ -50,6 +51,9 @@ async function main() {
 
   app.use("/sendblue", createSendblueRouter());
   app.use("/composio", createComposioRouter());
+  if (process.platform === "darwin") {
+    app.use("/apple", createAppleRouter());
+  }
 
   app.post("/agents/:id/cancel", (req, res) => {
     const ok = cancelAgent(req.params.id);
